@@ -1,0 +1,8 @@
+name: Skills
+main: prj.salmon.skills.skills
+version: 1.0
+api-version: 1.20
+commands:
+  skill:
+    description: スキルを選択
+    usage: /skill
