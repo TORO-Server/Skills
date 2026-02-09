@@ -358,16 +358,26 @@ public class skills extends JavaPlugin implements Listener {
         } else if (name.contains("ブリンク")) {
             playerClasses.put(uuid, PlayerClass.BLINK);
             blinkHasCharge.put(uuid, true);
+            player.getInventory().addItem(new ItemStack(Material.FEATHER));
+            player.sendMessage("§bブリンクを選択しました");
         } else if (name.contains("ブラストパック")) {
             playerClasses.put(uuid, PlayerClass.BLAST);
             blastCharges.put(uuid, 2);
+            player.getInventory().addItem(new ItemStack(Material.TNT_MINECART));
+            player.sendMessage("§eブラストパックを選択しました");
         } else if (name.contains("テレポート")) {
             playerClasses.put(uuid, PlayerClass.TELEPORT);
             tpHasCharge.put(uuid, true);
+            player.getInventory().addItem(new ItemStack(Material.ENDER_PEARL));
+            player.sendMessage("§dテレポートを選択しました");
         } else if (name.contains("ダッシュ")) {
             playerClasses.put(uuid, PlayerClass.DASH);
             dashEnergy.put(uuid, MAX_ENERGY);
             dashHasSlideCharge.put(uuid, true);
+            player.getInventory().addItem(new ItemStack(Material.BLAZE_ROD));
+            player.sendMessage("§6ダッシュを選択しました");
+        } else if (name.contains("全て解除")) {
+            player.sendMessage("§c能力をリセットしました");
         }
 
         player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1f, 1f);
@@ -390,10 +400,27 @@ public class skills extends JavaPlugin implements Listener {
         }
         if (dashIsRunning.getOrDefault(uuid, false))
             player.removePotionEffect(PotionEffectType.SPEED);
-        playerClasses.put(uuid, PlayerClass.NONE);
+
+        playerClasses.remove(uuid);
         acrobatCooldown.remove(uuid);
+        combatTag.remove(uuid);
+
+        blinkHasCharge.remove(uuid);
+        blinkIsInAir.remove(uuid);
         blinkLandingTime.remove(uuid);
+
+        blastCharges.remove(uuid);
+        blastLastThrowTime.remove(uuid);
+        blastIsInAir.remove(uuid);
         blastLandingTime.remove(uuid);
+
+        tpHasCharge.remove(uuid);
+        tpCooldownStartTime.remove(uuid);
+
+        dashEnergy.remove(uuid);
+        dashIsRunning.remove(uuid);
+        dashHasSlideCharge.remove(uuid);
+        dashSlideRechargeTime.remove(uuid);
         dashLastEmptyTime.remove(uuid);
     }
 
