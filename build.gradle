@@ -22,6 +22,6 @@ dependencies {
 
 jar {
     manifest {
-        attributes 'Main-Class': 'pr.salmon.skills.AcrobatScoutPlugin'
+        attributes 'Main-Class': 'prj.salmon.skills.skills'
     }
 }
