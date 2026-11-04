@@ -6,3 +6,9 @@ commands:
   skill:
     description: スキルを選択
     usage: /skill
+    permission: skills.use
+    permission-message: スキルを選択する権限がありません
+permissions:
+  skills.use:
+    description: スキルの選択を許可する権限
+    default: true
