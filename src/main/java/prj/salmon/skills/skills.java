@@ -11,10 +11,17 @@ import org.bukkit.event.*;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryPickupItemEvent;
+import org.bukkit.event.inventory.InventoryType;
+import org.bukkit.event.inventory.PrepareItemCraftEvent;
 import org.bukkit.event.player.*;
 import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.*;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -65,11 +72,23 @@ public class skills extends JavaPlugin implements Listener {
     private static final long DASH_REGEN_DELAY_MS = 3000;
     private static final long DASH_SLIDE_RECHARGE_MS = 5000;
 
+    private NamespacedKey skillItemKey;
+
     @Override
     public void onEnable() {
+        skillItemKey = new NamespacedKey(this, "skill_item");
         Bukkit.getPluginManager().registerEvents(this, this);
         registerGrappleRecipe();
         startGlobalTask();
+    }
+
+    @Override
+    public void onDisable() {
+        // Do not leave skill items and class effects behind when the plugin stops.
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (playerClasses.containsKey(player.getUniqueId()))
+                resetPlayer(player);
+        }
     }
 
     private void sendActionBar(Player player, String message) {
@@ -273,8 +292,24 @@ public class skills extends JavaPlugin implements Listener {
         return false;
     }
 
+    // Identifies the class selection GUI. A container with the same title is not the GUI.
+    private static class ClassMenu implements InventoryHolder {
+        private Inventory inventory;
+
+        @Override
+        public Inventory getInventory() {
+            return inventory;
+        }
+    }
+
+    private boolean isClassMenu(Inventory inventory) {
+        return inventory.getType() == InventoryType.CHEST && inventory.getHolder() instanceof ClassMenu;
+    }
+
     private void openClassSelectionGUI(Player player) {
-        Inventory gui = Bukkit.createInventory(null, 27, GUI_TITLE);
+        ClassMenu menu = new ClassMenu();
+        Inventory gui = Bukkit.createInventory(menu, 27, GUI_TITLE);
+        menu.inventory = gui;
 
         gui.setItem(1, createGuiItem(Material.FEATHER, "§bアクロバット",
                 "§f・§7スニークで§f2段ジャンプ§7が可能",
@@ -329,10 +364,14 @@ public class skills extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        if (!event.getView().getTitle().equals(GUI_TITLE))
+        Inventory top = event.getInventory();
+        if (!isClassMenu(top))
             return;
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player))
+            return;
+        // Only the GUI slots select a class, not the player's own inventory.
+        if (event.getRawSlot() < 0 || event.getRawSlot() >= top.getSize())
             return;
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || !clicked.hasItemMeta())
@@ -348,7 +387,7 @@ public class skills extends JavaPlugin implements Listener {
         } else if (name.equals("§aスカウト")) {
             playerClasses.put(uuid, PlayerClass.SCOUT);
             player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, Integer.MAX_VALUE, 0, false, false));
-            player.getInventory().addItem(getUnbreakableGrappleItem());
+            giveSkillItem(player, PlayerClass.SCOUT);
             player.sendMessage("§aスカウトを選択しました");
         } else if (name.equals("§eガーディアン")) {
             playerClasses.put(uuid, PlayerClass.GUARDIAN);
@@ -358,23 +397,23 @@ public class skills extends JavaPlugin implements Listener {
         } else if (name.contains("ブリンク")) {
             playerClasses.put(uuid, PlayerClass.BLINK);
             blinkHasCharge.put(uuid, true);
-            player.getInventory().addItem(new ItemStack(Material.FEATHER));
+            giveSkillItem(player, PlayerClass.BLINK);
             player.sendMessage("§bブリンクを選択しました");
         } else if (name.contains("ブラストパック")) {
             playerClasses.put(uuid, PlayerClass.BLAST);
             blastCharges.put(uuid, 2);
-            player.getInventory().addItem(new ItemStack(Material.TNT_MINECART));
+            giveSkillItem(player, PlayerClass.BLAST);
             player.sendMessage("§eブラストパックを選択しました");
         } else if (name.contains("テレポート")) {
             playerClasses.put(uuid, PlayerClass.TELEPORT);
             tpHasCharge.put(uuid, true);
-            player.getInventory().addItem(new ItemStack(Material.ENDER_PEARL));
+            giveSkillItem(player, PlayerClass.TELEPORT);
             player.sendMessage("§dテレポートを選択しました");
         } else if (name.contains("ダッシュ")) {
             playerClasses.put(uuid, PlayerClass.DASH);
             dashEnergy.put(uuid, MAX_ENERGY);
             dashHasSlideCharge.put(uuid, true);
-            player.getInventory().addItem(new ItemStack(Material.BLAZE_ROD));
+            giveSkillItem(player, PlayerClass.DASH);
             player.sendMessage("§6ダッシュを選択しました");
         } else if (name.contains("全て解除")) {
             player.sendMessage("§c能力をリセットしました");
@@ -386,6 +425,7 @@ public class skills extends JavaPlugin implements Listener {
 
     private void resetPlayer(Player player) {
         UUID uuid = player.getUniqueId();
+        removeSkillItems(player);
         player.getAttribute(Attribute.GENERIC_MAX_HEALTH).setBaseValue(20.0);
         player.removePotionEffect(PotionEffectType.SPEED);
         player.removePotionEffect(PotionEffectType.REGENERATION);
@@ -424,16 +464,196 @@ public class skills extends JavaPlugin implements Listener {
         dashLastEmptyTime.remove(uuid);
     }
 
+    // --- Skill Items ---
+    private ItemStack createSkillItem(PlayerClass pClass) {
+        ItemStack item = switch (pClass) {
+            case SCOUT -> getUnbreakableGrappleItem();
+            case BLINK -> new ItemStack(Material.FEATHER);
+            case BLAST -> new ItemStack(Material.TNT_MINECART);
+            case TELEPORT -> new ItemStack(Material.ENDER_PEARL);
+            case DASH -> new ItemStack(Material.BLAZE_ROD);
+            default -> null;
+        };
+        return item == null ? null : markSkillItem(item);
+    }
+
+    private ItemStack markSkillItem(ItemStack item) {
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.getPersistentDataContainer().set(skillItemKey, PersistentDataType.BYTE, (byte) 1);
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    private boolean isSkillItem(ItemStack item) {
+        if (item == null || !item.hasItemMeta())
+            return false;
+        ItemMeta meta = item.getItemMeta();
+        return meta != null && meta.getPersistentDataContainer().has(skillItemKey, PersistentDataType.BYTE);
+    }
+
+    private boolean hasSkillItem(Player player) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (isSkillItem(item))
+                return true;
+        }
+        return false;
+    }
+
+    private void giveSkillItem(Player player, PlayerClass pClass) {
+        ItemStack item = createSkillItem(pClass);
+        if (item == null)
+            return;
+        // An item that does not fit is not dropped, the class can be selected again after making room.
+        if (!player.getInventory().addItem(item).isEmpty())
+            player.sendMessage("§cインベントリに空きがないため、アイテムを配布できませんでした");
+    }
+
+    private void removeSkillItems(Player player) {
+        PlayerInventory inventory = player.getInventory();
+        ItemStack[] contents = inventory.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            if (isSkillItem(contents[i]))
+                inventory.setItem(i, null);
+        }
+        if (isSkillItem(player.getItemOnCursor()))
+            player.setItemOnCursor(null);
+    }
+
+    private ItemStack getSwappedItem(InventoryClickEvent event) {
+        PlayerInventory inventory = event.getWhoClicked().getInventory();
+        if (event.getClick() == ClickType.NUMBER_KEY)
+            return inventory.getItem(event.getHotbarButton());
+        if (event.getClick() == ClickType.SWAP_OFFHAND)
+            return inventory.getItemInOffHand();
+        return null;
+    }
+
+    private boolean isPlayerInventoryView(Inventory top) {
+        return top.getType() == InventoryType.CRAFTING || top.getType() == InventoryType.CREATIVE;
+    }
+
+    private boolean isBundle(ItemStack item) {
+        return item != null && item.getType().name().endsWith("BUNDLE");
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onSkillItemClick(InventoryClickEvent event) {
+        ItemStack current = event.getCurrentItem();
+        ItemStack cursor = event.getCursor();
+        boolean currentMarked = isSkillItem(current);
+        boolean cursorMarked = isSkillItem(cursor);
+        boolean swappedMarked = isSkillItem(getSwappedItem(event));
+        if (!currentMarked && !cursorMarked && !swappedMarked)
+            return;
+
+        // With a container open, skill items stay where they are.
+        Inventory top = event.getInventory();
+        boolean allowed = isPlayerInventoryView(top);
+        // Otherwise they can be rearranged, but not put in the crafting grid or in a bundle.
+        int slot = event.getRawSlot();
+        if (slot >= 0 && slot < top.getSize() && (cursorMarked || swappedMarked))
+            allowed = false;
+        if ((cursorMarked && isBundle(current)) || (currentMarked && isBundle(cursor)))
+            allowed = false;
+
+        if (!allowed)
+            event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        Inventory top = event.getInventory();
+        if (isClassMenu(top)) {
+            event.setCancelled(true);
+            return;
+        }
+        if (!isSkillItem(event.getOldCursor()))
+            return;
+        for (int slot : event.getRawSlots()) {
+            if (slot < top.getSize()) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPrepareCraft(PrepareItemCraftEvent event) {
+        for (ItemStack item : event.getInventory().getMatrix()) {
+            if (isSkillItem(item)) {
+                event.getInventory().setResult(null);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onDrop(PlayerDropItemEvent event) {
+        if (isSkillItem(event.getItemDrop().getItemStack()))
+            event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onDeath(PlayerDeathEvent event) {
+        event.getDrops().removeIf(this::isSkillItem);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryPickup(InventoryPickupItemEvent event) {
+        if (isSkillItem(event.getItem().getItemStack()))
+            event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInteractEntity(PlayerInteractEntityEvent event) {
+        if (isSkillItem(event.getPlayer().getInventory().getItem(event.getHand())))
+            event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
+        if (isSkillItem(event.getPlayerItem()))
+            event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        // Classes do not survive a restart or a crash, so neither do their items.
+        removeSkillItems(event.getPlayer());
+    }
+
+    @EventHandler
+    public void onRespawn(PlayerRespawnEvent event) {
+        Player player = event.getPlayer();
+        // Skill items are lost on death, issue the item again for the class the player still has.
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (player.isOnline() && !hasSkillItem(player))
+                giveSkillItem(player, playerClasses.getOrDefault(player.getUniqueId(), PlayerClass.NONE));
+        });
+    }
+
     // --- Ability Execution ---
     @EventHandler
     public void onPlayerInteract(PlayerInteractEvent event) {
+        boolean rightClick = event.getAction() == Action.RIGHT_CLICK_AIR
+                || event.getAction() == Action.RIGHT_CLICK_BLOCK;
+        ItemStack used = event.getItem();
+        if (rightClick && isSkillItem(used)) {
+            // In either hand, skill items are not placed, thrown or stored in a block.
+            // The grapple is the exception: it has to be cast to be used.
+            event.setUseInteractedBlock(Event.Result.DENY);
+            event.setUseItemInHand(used.getType() == Material.FISHING_ROD ? Event.Result.ALLOW : Event.Result.DENY);
+        }
+
         if (event.getHand() == EquipmentSlot.OFF_HAND)
             return;
         Player player = event.getPlayer();
         PlayerClass pClass = playerClasses.getOrDefault(player.getUniqueId(), PlayerClass.NONE);
         ItemStack item = player.getInventory().getItemInMainHand();
 
-        if (event.getAction() == Action.RIGHT_CLICK_AIR || event.getAction() == Action.RIGHT_CLICK_BLOCK) {
+        if (rightClick) {
             if (pClass == PlayerClass.BLINK && item.getType() == Material.FEATHER)
                 executeBlink(player);
             else if (pClass == PlayerClass.BLAST && item.getType() == Material.TNT_MINECART) {
@@ -512,7 +732,7 @@ public class skills extends JavaPlugin implements Listener {
         if (blastCharges.getOrDefault(uuid, 2) <= 0
                 || System.currentTimeMillis() - blastLastThrowTime.getOrDefault(uuid, 0L) < 500)
             return;
-        Item item = player.getWorld().dropItem(player.getEyeLocation(), new ItemStack(Material.TNT_MINECART));
+        Item item = player.getWorld().dropItem(player.getEyeLocation(), markSkillItem(new ItemStack(Material.TNT_MINECART)));
         item.setVelocity(player.getEyeLocation().getDirection().multiply(0.6));
         item.setPickupDelay(32767);
         blastActivePacks.put(uuid, item);
